@@ -29,6 +29,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import Throttle
 from pychonet import ECHONETAPIClient
 from pychonet.echonetapiclient import EchonetMaxOpcError
@@ -526,6 +527,8 @@ class ECHONETConnector:
         self._update_callbacks = []
         self._update_option_func = []
         self._update_flags_full_list = []
+        self._fast_poll_config = None
+        self._fast_poll_unsub = None
         self._ntfPropertyMap = instance["ntfmap"]
         self._getPropertyMap = instance["getmap"]
         self._setPropertyMap = instance["setmap"]
@@ -609,6 +612,31 @@ class ECHONETConnector:
         _LOGGER.debug(f"UID for ECHONETLite instance at {self._host} is {self._uid}.")
         if self._uid is None:
             self._uid = f"{self._host}-{self._eojgc}-{self._eojcc}-{self._eojci}"
+
+        # Start fast polling if configured by quirk
+        if self._fast_poll_config:
+            self._start_fast_poll()
+
+    def _start_fast_poll(self):
+        interval = self._fast_poll_config["interval"]
+        epcs = self._fast_poll_config["epcs"]
+
+        async def _fast_poll_tick(_now):
+            try:
+                batch_data = await self._instance.update(epcs)
+                if batch_data is not False and isinstance(batch_data, dict):
+                    self._update_data.update(batch_data)
+                    for update_func in self._update_callbacks:
+                        await update_func(True)
+            except Exception as ex:
+                _LOGGER.debug(f"Fast poll error for {self._host}: {ex}")
+
+        self._fast_poll_unsub = async_track_time_interval(
+            self.hass, _fast_poll_tick, timedelta(seconds=interval)
+        )
+        _LOGGER.info(
+            f"Fast poll started for {self._host}: EPCs {[hex(e) for e in epcs]} every {interval}s"
+        )
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     async def async_update(self, **kwargs):
@@ -733,6 +761,9 @@ class ECHONETConnector:
                     self._instance.EPC_FUNCTIONS.update({epc: func})
                     if op_code := extention.QUIRKS[epc].get("ENL_OP_CODE"):
                         self._enl_op_codes.update({epc: op_code})
+            if hasattr(extention, "FAST_POLL"):
+                self._fast_poll_config = extention.FAST_POLL
+                _LOGGER.debug(f"Loaded FAST_POLL config: {self._fast_poll_config}")
             _LOGGER.debug(f"Echonet EPC_FUNCTIONS is: {self._instance.EPC_FUNCTIONS}")
             _LOGGER.debug(f"Echonet _enl_op_codes is: {self._enl_op_codes}")
 

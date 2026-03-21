@@ -913,6 +913,27 @@ ENL_OP_CODES = {
                 CONF_STATE_CLASS: SensorStateClass.MEASUREMENT,
             },
         },
+        0x7E: {  # Electric vehicle charger/discharger
+            0xD3: {
+                CONF_ICON_POSITIVE: "mdi:battery-arrow-up",
+                CONF_ICON_NEGATIVE: "mdi:battery-arrow-down",
+                CONF_ICON_ZERO: "mdi:battery",
+                CONF_TYPE: SensorDeviceClass.POWER,
+                CONF_STATE_CLASS: SensorStateClass.MEASUREMENT,
+            },
+            0xD6: {
+                CONF_TYPE: SensorDeviceClass.ENERGY,
+                CONF_STATE_CLASS: SensorStateClass.TOTAL_INCREASING,
+            },
+            0xD8: {
+                CONF_TYPE: SensorDeviceClass.ENERGY,
+                CONF_STATE_CLASS: SensorStateClass.TOTAL_INCREASING,
+            },
+            0xE4: {
+                CONF_TYPE: SensorDeviceClass.BATTERY,
+                CONF_STATE_CLASS: SensorStateClass.MEASUREMENT,
+            },
+        },
         0x80: {  # Electric energy meter
             0xE0: {
                 CONF_TYPE: SensorDeviceClass.ENERGY,
