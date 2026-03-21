@@ -1,4 +1,5 @@
 import logging
+import time as pytime
 from homeassistant.const import CONF_ICON, CONF_NAME
 from homeassistant.components.select import SelectEntity
 from pychonet.HomeAirConditioner import (
@@ -162,9 +163,12 @@ class EchonetSelect(SelectEntity):
     async def async_select_option(self, option: str):
         self._attr_current_option = option
         self.async_schedule_update_ha_state()
-        if not await self._connector._instance.setMessage(
+        if await self._connector._instance.setMessage(
             self._code, self._options[option]
         ):
+            if self._connector._optimistic_trigger:
+                self._connector._optimistic_until[self._code] = pytime.time() + 30
+        else:
             # Restore previous state
             self._attr_current_option = self._connector._update_data.get(self._code)
             self.async_schedule_update_ha_state()
@@ -197,6 +201,12 @@ class EchonetSelect(SelectEntity):
 
     async def async_update_callback(self, isPush: bool = False):
         new_val = self._connector._update_data.get(self._code)
+        # Skip update if optimistic period is active for this EPC
+        if self._code in self._connector._optimistic_until:
+            if pytime.time() < self._connector._optimistic_until[self._code]:
+                return
+            else:
+                del self._connector._optimistic_until[self._code]
         changed = (
             new_val is not None and self._attr_current_option != new_val
         ) or self._attr_available != self._server_state["available"]

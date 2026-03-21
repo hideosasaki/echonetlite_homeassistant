@@ -529,6 +529,10 @@ class ECHONETConnector:
         self._update_flags_full_list = []
         self._fast_poll_config = None
         self._fast_poll_unsub = None
+        self._optimistic_until = {}  # {epc: expiry_timestamp}
+        self._optimistic_trigger = {}  # {trigger_epc: [target_epcs_to_clear]}
+        self._composite_state_config = None
+        self._composite_state = None
         self._ntfPropertyMap = instance["ntfmap"]
         self._getPropertyMap = instance["getmap"]
         self._setPropertyMap = instance["setmap"]
@@ -625,9 +629,19 @@ class ECHONETConnector:
             try:
                 batch_data = await self._instance.update(epcs)
                 if batch_data is not False and isinstance(batch_data, dict):
-                    self._update_data.update(batch_data)
-                    for update_func in self._update_callbacks:
-                        await update_func(True)
+                    now = pytime.time()
+                    for epc in list(self._optimistic_until):
+                        if now >= self._optimistic_until[epc]:
+                            del self._optimistic_until[epc]
+                    filtered = {
+                        k: v for k, v in batch_data.items()
+                        if k not in self._optimistic_until
+                    }
+                    if filtered:
+                        self._update_data.update(filtered)
+                        self._compute_composite_state()
+                        for update_func in self._update_callbacks:
+                            await update_func(True)
             except Exception as ex:
                 _LOGGER.debug(f"Fast poll error for {self._host}: {ex}")
 
@@ -684,8 +698,76 @@ class ECHONETConnector:
         if len(update_data) > 0:
             self._update_data.update(update_data)
 
+    def _compute_composite_state(self):
+        """Compute composite state from C7 (connection) and DA (mode)."""
+        cfg = self._composite_state_config
+        if not cfg:
+            return
+        c7_raw = self._update_data.get(cfg["connection_epc"])
+        da_raw = self._update_data.get(cfg["mode_epc"])
+        # Get raw byte values from parsed strings by reverse-lookup
+        c7_func = self._instance.EPC_FUNCTIONS.get(cfg["connection_epc"])
+        da_func = self._instance.EPC_FUNCTIONS.get(cfg["mode_epc"])
+        c7_val = None
+        da_val = None
+        if c7_func and isinstance(c7_func, list) and isinstance(c7_func[1], dict):
+            for k, v in c7_func[1].items():
+                if v == c7_raw:
+                    c7_val = k
+                    break
+        if da_func and isinstance(da_func, list) and isinstance(da_func[1], dict):
+            for k, v in da_func[1].items():
+                if v == da_raw:
+                    da_val = k
+                    break
+        if c7_val is None or da_val is None:
+            return
+        if c7_val in cfg["connection_disconnected"]:
+            self._composite_state = cfg["default_disconnected"]
+        elif c7_val in cfg["connection_connecting"]:
+            self._composite_state = cfg["default_connecting"]
+        elif c7_val in cfg["connection_ready"]:
+            if da_val in cfg["mode_map"]:
+                self._composite_state = cfg["mode_map"][da_val]
+            else:
+                _LOGGER.warning(
+                    f"Unexpected composite state: C7=0x{c7_val:02x}, DA=0x{da_val:02x}"
+                )
+                self._composite_state = cfg["default_unknown"]
+        else:
+            _LOGGER.warning(
+                f"Uncertain composite state: C7=0x{c7_val:02x}, DA=0x{da_val:02x}"
+            )
+            self._composite_state = cfg["default_unknown"]
+        self._update_data["_composite_status"] = self._composite_state
+
     async def async_update_callback(self, isPush: bool = False):
         await self.async_update_data(kwargs={"no_request": True})
+        if isPush and self._optimistic_trigger and self._optimistic_until:
+            changed_epcs = set(self._update_data.keys())
+            for trigger_epc, target_epcs in self._optimistic_trigger.items():
+                if trigger_epc in changed_epcs:
+                    # Compute composite state to decide whether to clear optimistic
+                    self._compute_composite_state()
+                    cs = self._composite_state
+                    cfg = self._composite_state_config
+                    if cfg and cs in (cfg["default_connecting"], cfg["default_unknown"]):
+                        # Still transitioning, keep optimistic
+                        _LOGGER.debug(f"Optimistic maintained: composite={cs}")
+                        break
+                    # Transition complete: refresh target EPCs and clear optimistic
+                    try:
+                        refreshed = await self._instance.update(target_epcs)
+                        if refreshed is not False and isinstance(refreshed, dict):
+                            self._update_data.update(refreshed)
+                    except Exception as ex:
+                        _LOGGER.debug(f"Optimistic refresh error: {ex}")
+                    for epc in target_epcs:
+                        self._optimistic_until.pop(epc, None)
+                    self._compute_composite_state()
+                    _LOGGER.debug(f"Optimistic cleared: composite={self._composite_state}")
+        else:
+            self._compute_composite_state()
         for update_func in self._update_callbacks:
             await update_func(isPush)
 
@@ -764,6 +846,12 @@ class ECHONETConnector:
             if hasattr(extention, "FAST_POLL"):
                 self._fast_poll_config = extention.FAST_POLL
                 _LOGGER.debug(f"Loaded FAST_POLL config: {self._fast_poll_config}")
+            if hasattr(extention, "OPTIMISTIC_TRIGGER"):
+                self._optimistic_trigger = extention.OPTIMISTIC_TRIGGER
+                _LOGGER.debug(f"Loaded OPTIMISTIC_TRIGGER: {self._optimistic_trigger}")
+            if hasattr(extention, "COMPOSITE_STATE"):
+                self._composite_state_config = extention.COMPOSITE_STATE
+                _LOGGER.debug(f"Loaded COMPOSITE_STATE: {self._composite_state_config}")
             _LOGGER.debug(f"Echonet EPC_FUNCTIONS is: {self._instance.EPC_FUNCTIONS}")
             _LOGGER.debug(f"Echonet _enl_op_codes is: {self._enl_op_codes}")
 

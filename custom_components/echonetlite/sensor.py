@@ -204,6 +204,14 @@ async def async_setup_entry(hass, config, async_add_entities, discovery_info=Non
                     hass,
                 )
             )
+    # Add composite state sensors from quirks
+    for entity in hass.data[DOMAIN][config.entry_id]:
+        connector = entity["echonetlite"]
+        if connector._composite_state_config:
+            entities.append(
+                EchonetCompositeSensor(connector, config)
+            )
+
     async_add_entities(entities, True)
 
 
@@ -454,3 +462,63 @@ class EchonetSensor(SensorEntity):
         _LOGGER.debug(
             f"{self._attr_name}({self._op_code}): _should_poll is {_should_poll}"
         )
+
+
+class EchonetCompositeSensor(SensorEntity):
+    """Sensor that derives a user-friendly state from multiple EPCs."""
+
+    _attr_translation_key = DOMAIN
+
+    def __init__(self, connector, config):
+        name = get_device_name(connector, config)
+        self._connector = connector
+        cfg = connector._composite_state_config
+        self._attr_name = f"{config.title} {cfg['name']}"
+        self._attr_unique_id = (
+            f"{connector._uidi}-composite-status"
+            if connector._uidi
+            else f"{connector._uid}-composite-status"
+        )
+        self._device_name = name
+        self._icons = cfg.get("icons", {})
+        self._default_icon = cfg.get("default_icon", "mdi:ev-station")
+        self._attr_icon = self._default_icon
+        self._attr_should_poll = False
+        self._attr_available = True
+        self._server_state = connector._api._state[connector._instance._host]
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {
+                (
+                    DOMAIN,
+                    self._connector._uid,
+                    self._connector._eojgc,
+                    self._connector._eojcc,
+                    self._connector._eojci,
+                )
+            },
+            "name": self._device_name,
+            "manufacturer": self._connector._manufacturer
+            + (
+                " " + self._connector._host_product_code
+                if self._connector._host_product_code
+                else ""
+            ),
+            "model": EOJX_CLASS[self._connector._eojgc][self._connector._eojcc],
+        }
+
+    @property
+    def native_value(self):
+        return self._connector._composite_state
+
+    async def async_added_to_hass(self):
+        self._connector.register_async_update_callbacks(self.async_update_callback)
+
+    async def async_update_callback(self, isPush: bool = False):
+        new_val = self._connector._composite_state
+        if new_val is not None:
+            self._attr_icon = self._icons.get(new_val, self._default_icon)
+            self._attr_available = self._server_state["available"]
+            self.async_schedule_update_ha_state()
