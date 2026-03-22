@@ -40,7 +40,7 @@ COMPOSITE_STATE = {
     "name": "Status",
     "connection_epc": 0xC7,
     "mode_epc": 0xDA,
-    "connection_ready": [0x41, 0x43],
+    "connection_ready": [0x41, 0x42, 0x43],
     "connection_connecting": [0x40],
     "connection_disconnected": [0x30],
     "mode_map": {
