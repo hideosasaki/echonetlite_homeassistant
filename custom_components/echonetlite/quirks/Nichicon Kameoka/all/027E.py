@@ -26,13 +26,13 @@ QUIRKS = {
 # Fast polling: these EPCs are polled at a shorter interval
 FAST_POLL = {
     "interval": 5,  # seconds
-    "epcs": [0xD3, 0xDA],  # instantaneous power, operation mode
+    "epcs": [0xD3],  # instantaneous power only (DA comes via push)
 }
 
 # When C7 (vehicle connection status) changes via push notification,
 # clear optimistic lock on DA (operation mode) and refresh its value.
 OPTIMISTIC_TRIGGER = {
-    0xC7: [0xDA],  # C7 push → clear DA optimistic, then GET DA
+    0xC7: [0xDA, 0xE4],  # C7 push → clear DA optimistic, then GET DA + SoC
 }
 
 # Composite state sensor: derives user-friendly status from C7 + DA

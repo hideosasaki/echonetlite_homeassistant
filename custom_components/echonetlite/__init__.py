@@ -629,19 +629,10 @@ class ECHONETConnector:
             try:
                 batch_data = await self._instance.update(epcs)
                 if batch_data is not False and isinstance(batch_data, dict):
-                    now = pytime.time()
-                    for epc in list(self._optimistic_until):
-                        if now >= self._optimistic_until[epc]:
-                            del self._optimistic_until[epc]
-                    filtered = {
-                        k: v for k, v in batch_data.items()
-                        if k not in self._optimistic_until
-                    }
-                    if filtered:
-                        self._update_data.update(filtered)
-                        self._compute_composite_state()
-                        for update_func in self._update_callbacks:
-                            await update_func(True)
+                    self._update_data.update(batch_data)
+                    self._compute_composite_state()
+                    for update_func in self._update_callbacks:
+                        await update_func(False)
             except Exception as ex:
                 _LOGGER.debug(f"Fast poll error for {self._host}: {ex}")
 
@@ -742,30 +733,44 @@ class ECHONETConnector:
         self._update_data["_composite_status"] = self._composite_state
 
     async def async_update_callback(self, isPush: bool = False):
+        prev_data = dict(self._update_data) if isPush and self._optimistic_trigger else None
         await self.async_update_data(kwargs={"no_request": True})
-        if isPush and self._optimistic_trigger and self._optimistic_until:
-            changed_epcs = set(self._update_data.keys())
-            for trigger_epc, target_epcs in self._optimistic_trigger.items():
-                if trigger_epc in changed_epcs:
-                    # Compute composite state to decide whether to clear optimistic
-                    self._compute_composite_state()
-                    cs = self._composite_state
-                    cfg = self._composite_state_config
-                    if cfg and cs in (cfg["default_connecting"], cfg["default_unknown"]):
-                        # Still transitioning, keep optimistic
-                        _LOGGER.debug(f"Optimistic maintained: composite={cs}")
-                        break
-                    # Transition complete: refresh target EPCs and clear optimistic
-                    try:
-                        refreshed = await self._instance.update(target_epcs)
-                        if refreshed is not False and isinstance(refreshed, dict):
-                            self._update_data.update(refreshed)
-                    except Exception as ex:
-                        _LOGGER.debug(f"Optimistic refresh error: {ex}")
-                    for epc in target_epcs:
-                        self._optimistic_until.pop(epc, None)
-                    self._compute_composite_state()
-                    _LOGGER.debug(f"Optimistic cleared: composite={self._composite_state}")
+        if isPush and self._optimistic_trigger:
+            changed_epcs = {
+                k for k in self._update_data
+                if isinstance(k, int) and self._update_data.get(k) != prev_data.get(k)
+            }
+            if self._optimistic_until:
+                for trigger_epc, target_epcs in self._optimistic_trigger.items():
+                    if trigger_epc in changed_epcs:
+                        self._compute_composite_state()
+                        cs = self._composite_state
+                        cfg = self._composite_state_config
+                        if cfg and cs in (cfg["default_connecting"], cfg["default_unknown"]):
+                            _LOGGER.debug(f"Optimistic maintained: composite={cs}")
+                            break
+                        try:
+                            refreshed = await self._instance.update(target_epcs)
+                            if refreshed is not False and isinstance(refreshed, dict):
+                                self._update_data.update(refreshed)
+                        except Exception as ex:
+                            _LOGGER.debug(f"Optimistic refresh error: {ex}")
+                        for epc in target_epcs:
+                            self._optimistic_until.pop(epc, None)
+                        self._compute_composite_state()
+                        _LOGGER.debug(f"Optimistic cleared: composite={self._composite_state}")
+            elif changed_epcs:
+                for trigger_epc, target_epcs in self._optimistic_trigger.items():
+                    if trigger_epc in changed_epcs:
+                        try:
+                            refreshed = await self._instance.update(target_epcs)
+                            if refreshed is not False and isinstance(refreshed, dict):
+                                self._update_data.update(refreshed)
+                        except Exception as ex:
+                            _LOGGER.debug(f"Trigger refresh error: {ex}")
+                self._compute_composite_state()
+            else:
+                self._compute_composite_state()
         else:
             self._compute_composite_state()
         for update_func in self._update_callbacks:
