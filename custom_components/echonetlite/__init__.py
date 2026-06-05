@@ -718,7 +718,13 @@ class ECHONETConnector:
         elif c7_val in cfg["connection_connecting"]:
             self._composite_state = cfg["default_connecting"]
         elif c7_val in cfg["connection_ready"]:
-            if da_val in cfg["mode_map"]:
+            # connecting_mode_values: {c7_val: [da_vals]} — DA values that
+            # indicate a transient connecting state for a specific C7 value.
+            connecting_da_map = cfg.get("connecting_mode_values", {})
+            connecting_da = connecting_da_map.get(c7_val, [])
+            if connecting_da and da_val in connecting_da:
+                self._composite_state = cfg["default_connecting"]
+            elif da_val in cfg["mode_map"]:
                 self._composite_state = cfg["mode_map"][da_val]
             else:
                 _LOGGER.warning(

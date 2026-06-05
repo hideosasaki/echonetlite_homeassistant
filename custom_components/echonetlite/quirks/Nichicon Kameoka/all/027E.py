@@ -23,10 +23,13 @@ QUIRKS = {
     },
 }
 
-# Fast polling: these EPCs are polled at a shorter interval
+# Fast polling: these EPCs are polled at a shorter interval.
+# C7 (connection state) is included because the device does not reliably send
+# a C7=ready INF after manual discharge starts — the connecting→ready transition
+# is only observable by polling.
 FAST_POLL = {
     "interval": 5,  # seconds
-    "epcs": [0xD3],  # instantaneous power only (DA comes via push)
+    "epcs": [0xD3, 0xC7],  # power + connection state
 }
 
 # When C7 (vehicle connection status) changes via push notification,
@@ -36,17 +39,30 @@ OPTIMISTIC_TRIGGER = {
 }
 
 # Composite state sensor: derives user-friendly status from C7 + DA
+#
+# This device reports C7=0x40 (Not chargeable) both during connection
+# negotiation AND while actively discharging. C7 does not reliably
+# transition to a "ready" value when discharging starts, so we treat
+# all "connected" C7 values (0x40-0x44) as connection_ready and let
+# DA determine the actual state.
 COMPOSITE_STATE = {
     "name": "Status",
     "connection_epc": 0xC7,
     "mode_epc": 0xDA,
-    "connection_ready": [0x41, 0x42, 0x43],
-    "connection_connecting": [0x40],
+    "connection_ready": [0x40, 0x41, 0x42, 0x43, 0x44],
+    "connection_connecting": [],
     "connection_disconnected": [0x30],
     "mode_map": {
         0x42: "Charging",
         0x43: "Discharging",
         0x44: "Standby",
+        0x47: "Idle",
+    },
+    # When C7=0x40 (Not chargeable) and DA is still Standby/Idle, the device
+    # is negotiating with the EV — treat it as Processing (transient state).
+    # When C7 is 0x41/0x42/0x43 with DA=0x44, it is genuinely Standby.
+    "connecting_mode_values": {
+        0x40: [0x44, 0x47],
     },
     "default_disconnected": "Idle",
     "default_connecting": "Processing",
